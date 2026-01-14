@@ -1,6 +1,11 @@
 import os
 import subprocess
 import argparse
+import datetime
+import random
+import os
+import argparse
+from intelhex import IntelHex
 
 class eepCH341(object):
     """
@@ -73,122 +78,49 @@ class eepCH341(object):
     def hex(self):
         return self.bytes().hex()
 
-    def erase(self, bin_ch341eeprom: str):
-        print("Erasing EEPROM...")
-        r = subprocess.run([
-            bin_ch341eeprom,
-            # "--verbose",
-            "--erase",
-            "--size", self.size
-        ], check=True)
-        return r
-
-    def read(self, bin_ch341eeprom: str):
-        # Delete existing read_eeprom.bin file if it exists
-        if os.path.exists("read_eeprom.bin"):
-            os.remove("read_eeprom.bin")
-        # Use `ch341eeprom` to read the EEPROM
-        r = subprocess.run([
-            bin_ch341eeprom,
-            # "--verbose",
-            "--read", "read_eeprom.bin",
-            "--size", self.size
-        ], capture_output=True, check=True)
-
-        stdout = r.stdout.decode().strip()
-        stderr = r.stderr.decode().strip()
-        if stdout != "":
-            print(stdout)
-        if stderr != "":
-            print(stderr)
-        if "Couldn't open device" in stderr:
-            print("Ensure the device is in Programming Mode and try again.")
-            exit(1)
-
-        # Read the EEPROM file and return it as a byte array
-        with open("read_eeprom.bin", "rb") as f:
-            data = f.read()
-        os.remove("read_eeprom.bin")
-
-        return data
-
-    def program(self, bin_ch341eeprom: str):
-        # Delete existing write_eeprom.bin file if it exists
-        if os.path.exists("write_eeprom.bin"):
-            os.remove("write_eeprom.bin")
-        # Write the byte array to a temp file
-        with open("write_eeprom.bin", "wb") as f:
-            f.write(self.bytes())
-        # Use `ch341eeprom` to program the EEPROM
-        print("Programming EEPROM...")
-        r = subprocess.run([
-            bin_ch341eeprom,
-            # "--verbose",
-            "--write", "write_eeprom.bin",
-            "--size", self.size
-        ], check=True)
-        os.remove("write_eeprom.bin")
-
-        return r
-    
-    def verify(self, bin_ch341eeprom: str):
-        # Delete existing verify_eeprom.bin file if it exists
-        if os.path.exists("verify_eeprom.bin"):
-            os.remove("verify_eeprom.bin")
-        # Write the byte array to a temp file
-        with open("verify_eeprom.bin", "wb") as f:
-            f.write(self.bytes())
-        # Use `ch341eeprom` to verify the EEPROM
-        print("Verifying EEPROM...")
-        r = subprocess.run([
-            bin_ch341eeprom,
-            # "--verbose",
-            "--verify", "verify_eeprom.bin",
-            "--size", self.size
-        ], check=True)
-        os.remove("verify_eeprom.bin")
-
-        return r
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="CH341 EEPROM programmer utility")
-    parser.add_argument("--serial", type=int, default=13374204,
-                        help="8-digit serial number (default: 13374201)")
-    parser.add_argument("--product", default="MESHTOAD",
-                        help="Product name (default: MESHTOAD)")
+    parser = argparse.ArgumentParser(description="CH341 EEPROM Intel HEX generator")
     parser.add_argument("--major-version", type=int, default=1, dest="majorVersion",
                         help="Major version number (default: 1)")
-    parser.add_argument("--minor-version", type=int, default=2, dest="minorVersion",
-                        help="Minor version number (default: 2)")
-    parser.add_argument("--bin", default="ch341eeprom", 
-                        help="Path to ch341eeprom binary (default: ch341eeprom from PATH)")
+    parser.add_argument("--minor-version", type=int, default=0, dest="minorVersion",
+                        help="Minor version number (default: 0)")
+    parser.add_argument("-r", "--random", type=str, default=None,
+                        help="Specify random digits (00-99). If not specified, automatically generate 0-99 random number")
     args = parser.parse_args()
 
-    cur_serial = int(args.serial)
+    # Check if -r argument is numeric and within 0-99 range
+    if args.random is not None:
+        if not args.random.isdigit():
+            raise ValueError("Random digits must be numeric (0-99)")
+        rand_num = int(args.random)
+        if rand_num < 0 or rand_num > 99:
+            raise ValueError("Random digits must be within 0-99 range")
+    else:
+        rand_num = random.randint(0, 99)
 
-    while True:
-        input(f"Attach serial number: {cur_serial}")
-        eeprom = eepCH341(args.majorVersion, args.minorVersion, str(cur_serial), args.product)
-        # print(eeprom.hex())
+    # Automatically generate serial number
+    now = datetime.datetime.now()
+    year_digit = now.year - 2026   # 2026=0, 2027=1...
+    week_num = now.isocalendar()[1]  # ISO week number
+    hour_num = now.hour
 
-        # Read the EEPROM before programming
-        read_init = eeprom.read(args.bin)
-        if len(read_init) != eeprom.size_bytes:
-            raise ValueError(f"EEPROM read error: expected {eeprom.size_bytes} bytes, got {len(read_init)} bytes")
+    serial_str = f"{year_digit}{week_num:02d}{hour_num:03d}{rand_num:02d}"
 
-        # Erase the EEPROM
-        eeprom.erase(args.bin)
+    eeprom = eepCH341(args.majorVersion, args.minorVersion, serial_str, "uMesh")
 
-        # Program/verify the EEPROM
-        eeprom.program(args.bin)
-        eeprom.verify(args.bin)
-        print(f"Programmed EEPROM for {args.product} {cur_serial}")
+    # Ensure output directory exists
+    output_dir = "./firmware-output"
+    os.makedirs(output_dir, exist_ok=True)
 
-        # Read the EEPROM again
-        read_again = eeprom.read(args.bin)
-        print("New EEPROM Contents:")
-        # Print the first 128 bytes of the EEPROM
-        print(read_again[0:127])
-        print("")
+    # Include serial number in filename
+    output_filename = os.path.join(output_dir, f"eeprom_{serial_str}.hex")
 
-        cur_serial += 1
+    # Use IntelHex to output standard HEX file
+    ih = IntelHex()
+    data = eeprom.bytes()
+    for i, b in enumerate(data):
+        ih[i] = b
+    ih.write_hex_file(output_filename)
+
+    print(f"Generated serial: {serial_str}")
+    print(f"Intel HEX file written to {output_filename}")
